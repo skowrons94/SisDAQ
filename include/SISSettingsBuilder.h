@@ -7,6 +7,7 @@
 
 #include <map>
 #include <string>
+#include <sstream>
 
 struct Setting{
 
