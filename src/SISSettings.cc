@@ -25,9 +25,7 @@ int SISSettings::write( uint32_t address, uint32_t value )
 
 int SISSettings::read( uint32_t address, uint32_t& value )
 {
-    uint32_t* reg_value = nullptr;
-    int error = fInterface->register_read( address, reg_value );
-    value = *reg_value;
+    int error = fInterface->register_read( address, &value );
     if( error != 0 ) return -1;
     else return 0;
 }
@@ -37,15 +35,15 @@ int SISSettings::setRegisterSpecificBits( uint32_t reg_add, uint8_t bit_lower, u
     int error;
     uint8_t bit_number = bit_upper - bit_lower + 1;
     if( (value < ((uint32_t)1<<bit_number)) && bit_upper<32 && bit_lower<=bit_upper ){
-        uint32_t* reg_data = nullptr;
+        uint32_t  reg_data;
         uint32_t  reg_mask = 0;
     
         for( int bit = 0; bit < 32; bit++ ) { if( bit<bit_lower || bit>bit_upper ) { reg_mask+=(1<<bit); } }
     
-        error = fInterface->register_read( reg_add, reg_data );
+        error = fInterface->register_read( reg_add, &reg_data );
         if( error == 0 ) {
-            *reg_data = (*reg_data & reg_mask) + (value << bit_lower);
-            error = fInterface->register_write( reg_add, *reg_data );
+            reg_data = (reg_data & reg_mask) + (value << bit_lower);
+            error = fInterface->register_write( reg_add, reg_data );
             if( error != 0 ) return -1;
         }
         else return -1;
@@ -59,14 +57,14 @@ int SISSettings::setRegisterSpecificBits( uint32_t reg_add, uint8_t bit_lower, u
 int SISSettings::getRegisterSpecificBits( uint32_t reg_add, uint8_t bit_lower, uint8_t bit_upper, uint32_t& value ) 
 {
     int error;
-    uint32_t* reg_data = nullptr;
+    uint32_t reg_data;
     uint32_t reg_mask  = 0;
     if( bit_upper<32 && bit_lower<=bit_upper ){
         for( int bit = 0; bit < 32; bit++ ) { if (bit>=bit_lower && bit<=bit_upper) { reg_mask+=(1<<bit); } }
-        error = fInterface->register_read( reg_add, reg_data );
+        error = fInterface->register_read( reg_add, &reg_data );
         if( error != 0 ) return -1;
         else{
-            value = ((*reg_data & reg_mask) >> bit_lower);
+            value = ((reg_data & reg_mask) >> bit_lower);
             return 0;
         }
     }
