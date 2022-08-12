@@ -73,13 +73,54 @@ int SISSettings::getRegisterSpecificBits( uint32_t reg_add, uint8_t bit_lower, u
     return -1;
 }
 
+int SISSettings::commitRegisters( )
+{
+    uint32_t value, address;
+    std::ostringstream regVal;
+
+    Json::Value::Members registers_members = fRegisters.getMemberNames( );
+    for( const std::string &member : registers_members ){
+        address = fRegisters[member]["address"].asUInt();
+        value   = fRegisters[member]["value"].asUInt();
+        if( write( address, value ) != 0 )
+            return -1;
+    }
+    
+    return 0;
+}
+
+int SISSettings::readRegisters( )
+{
+    uint32_t value, address;
+    std::ostringstream regVal;
+
+    Json::Value::Members registers_members = fRegisters.getMemberNames( );
+    for( const std::string &member : registers_members ){
+        address = fRegisters[member]["address"].asUInt();        
+        if( read( address, value ) != 0 )
+            return -1;
+        regVal << std::hex << value;
+        fRegisters[member]["address"] = regVal.str( );
+        regVal.str( "" );
+    }
+    
+    return 0;
+}
+
 uint32_t SISSettings::getRegister( std::string reg_name )
 {
-    for( auto reg : this->fRegisters ) {
-        if( reg["name"] == reg_name ) {
-            return reg["address"].asUInt();
+    std::string name;
+    uint32_t address;
+
+    Json::Value::Members registers_members = fRegisters.getMemberNames( );
+    for( const std::string &member : registers_members ){
+        name = fRegisters[member]["name"].asString();
+        if( name == reg_name ){
+            address = fRegisters[member]["address"].asUInt();
+            return address;
         }
     }
+
     return -1;
 }
 
@@ -231,30 +272,5 @@ int SISSettings::loadRegisters( std::string dirIn )
     if( !file.is_open() ) return -1;
     file >> fRegisters;
     file.close();
-    return 0;
-}
-
-int SISSettings::commitRegisters( )
-{
-    for( auto reg : fRegisters ){
-        if( write( reg["address"].asUInt(), reg["value"].asUInt() ) == 0 )
-            return 0;
-        else return -1;
-    }
-    return 0;
-}
-
-int SISSettings::readRegisters( )
-{
-    uint32_t value;
-    std::ostringstream regVal;
-    for( auto reg : fRegisters ){
-        if( read( reg["address"].asUInt(), value ) == 0 ){
-            regVal << "0x"   << std::hex << value;
-            reg["value"] = regVal.str();
-            return 0;
-        }
-        else return -1;
-    }
     return 0;
 }
