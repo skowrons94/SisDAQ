@@ -80,8 +80,8 @@ int SISSettings::commitRegisters( )
 
     Json::Value::Members registers_members = fRegisters.getMemberNames( );
     for( const std::string &member : registers_members ){
-        address = fRegisters[member]["address"].asUInt();
-        value   = fRegisters[member]["value"].asUInt();
+        address = std::stoul( fRegisters[member]["address"].asString() );
+        value   = std::stoul( fRegisters[member]["value"].asString() );
         if( write( address, value ) != 0 )
             return -1;
     }
@@ -96,7 +96,7 @@ int SISSettings::readRegisters( )
 
     Json::Value::Members registers_members = fRegisters.getMemberNames( );
     for( const std::string &member : registers_members ){
-        address = fRegisters[member]["address"].asUInt();        
+        address = std::stoul( fRegisters[member]["address"].asString() );        
         if( read( address, value ) != 0 )
             return -1;
         regVal << std::hex << value;
@@ -116,7 +116,7 @@ uint32_t SISSettings::getRegister( std::string reg_name )
     for( const std::string &member : registers_members ){
         name = fRegisters[member]["name"].asString();
         if( name == reg_name ){
-            address = fRegisters[member]["address"].asUInt();
+            address = std::stoul( fRegisters[member]["address"].asString() );
             return address;
         }
     }
