@@ -170,10 +170,10 @@ void SISSettingsBuilder::BuildSettings( )
     settings["UO Sample Logic Bankx"] = new Setting( "LEMO Out UO",  21, 21, false, false );
     settings["UO Sample Logic Bank2"] = new Setting( "LEMO Out UO",  22, 22, false, false );
 
-    settings["Input Tap Delay"]                = new Setting( "Input TAP Delay",  0,  7, true, false );
-    settings["Input Tap Delay Channel Select"] = new Setting( "Input TAP Delay",  8,  9, true, false );
-    settings["Input Tap Delay Calibration"]    = new Setting( "Input TAP Delay", 11, 11, true, false );
-    settings["Input Tap Delay Add 1/2 Sample"] = new Setting( "Input TAP Delay", 12, 12, true, false );
+    settings["Input TAP Delay"]                = new Setting( "Input TAP Delay",  0,  7, true, false );
+    settings["Input TAP Delay Channel Select"] = new Setting( "Input TAP Delay",  8,  9, true, false );
+    settings["Input TAP Delay Calibration"]    = new Setting( "Input TAP Delay", 11, 11, true, false );
+    settings["Input TAP Delay Add 1/2 Sample"] = new Setting( "Input TAP Delay", 12, 12, true, false );
 
     settings["Gain Control CH1"]    = new Setting( "Gain Control",  0,  1, true, false );
     settings["Ohm Termination CH1"] = new Setting( "Gain Control",  2,  2, true, false );

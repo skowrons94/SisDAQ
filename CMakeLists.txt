@@ -29,6 +29,7 @@ add_executable(SisDAQ
   ${SRC_DIR}/SISEthernetInterface.cc
   ${SRC_DIR}/SISSettingsBuilder.cc
   ${SRC_DIR}/SISSettings.cc
+  ${SRC_DIR}/ReadoutUnit.cc
 )
 
 target_link_libraries(SisDAQ PRIVATE ${ROOT_LIBRARIES} ${Boost_LIBRARIES} Qt5::Widgets jsoncpp)

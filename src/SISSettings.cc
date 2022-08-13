@@ -74,7 +74,6 @@ int SISSettings::getRegisterSpecificBits( uint32_t reg_add, uint8_t bit_lower, u
 int SISSettings::commitRegisters( )
 {
     uint32_t value, address;
-    std::ostringstream regVal;
 
     Json::Value::Members registers_members = fRegisters.getMemberNames( );
     for( const std::string &member : registers_members ){
@@ -131,9 +130,6 @@ void SISSettings::getChannelRegister( uint32_t& reg_add, uint32_t channel, bool 
     else if( is_adc && !is_cha ){
         reg_add += 0x1000*adc;
     }
-    else if( !is_adc && !is_cha ){
-        reg_add = reg_add;
-    }
 }
 
 int SISSettings::writeSetting( std::string setting, int channel, uint32_t value )
@@ -167,9 +163,9 @@ int SISSettings::writeSetting( std::string setting, int channel, uint32_t value 
 
                 getChannelRegister( reg_add, channel, it.second->is_adc, it.second->is_cha ); 
 
-                if( setRegisterSpecificBits( reg_add, bit_lower, bit_upper, value ) == 0 )
-                    return 0;
-                else return -1;
+                if( setRegisterSpecificBits( reg_add, bit_lower, bit_upper, value ) != 0 )
+                    return -1;
+                return 0;
             }
         }
         for( auto it : fSettings ){
@@ -183,9 +179,9 @@ int SISSettings::writeSetting( std::string setting, int channel, uint32_t value 
 
                 getChannelRegister( reg_add, channel, it.second->is_adc, it.second->is_cha ); 
 
-                if( setRegisterSpecificBits( reg_add, bit_lower, bit_upper, value ) == 0 )
-                    return 0;
-                else return -1;
+                if( setRegisterSpecificBits( reg_add, bit_lower, bit_upper, value ) != 0 )
+                    return -1;
+                return 0;
             }
         }
     }
@@ -207,9 +203,9 @@ int SISSettings::readSetting( std::string setting, int channel, uint32_t& value 
 
         getChannelRegister( reg_add, channel, fSettings[setting]->is_adc, fSettings[setting]->is_cha ); 
 
-        if( getRegisterSpecificBits( reg_add, bit_lower, bit_upper, value ) == 0 )
-            return 0;
-        else return -1;
+        if( getRegisterSpecificBits( reg_add, bit_lower, bit_upper, value ) != 0 )
+            return -1;
+        return 0;
     }
     else{
         for( auto it : fSettings ){
@@ -223,9 +219,9 @@ int SISSettings::readSetting( std::string setting, int channel, uint32_t& value 
 
                 getChannelRegister( reg_add, channel, it.second->is_adc, it.second->is_cha ); 
 
-                if( getRegisterSpecificBits( reg_add, bit_lower, bit_upper, value ) == 0 )
-                    return 0;
-                else return -1;
+                if( getRegisterSpecificBits( reg_add, bit_lower, bit_upper, value ) != 0 )
+                    return -1;
+                return -1;
             }
         }
         for( auto it : fSettings ){
@@ -239,9 +235,9 @@ int SISSettings::readSetting( std::string setting, int channel, uint32_t& value 
 
                 getChannelRegister( reg_add, channel, it.second->is_adc, it.second->is_cha ); 
 
-                if( getRegisterSpecificBits( reg_add, bit_lower, bit_upper, value ) == 0 )
-                    return 0;
-                else return -1;
+                if( getRegisterSpecificBits( reg_add, bit_lower, bit_upper, value ) != 0 )
+                    return -1;
+                return 0;
             }
         }
     }

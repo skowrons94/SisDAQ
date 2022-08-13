@@ -33,6 +33,7 @@ int main() {
     SISSettings* sisSettings;
     sisSettings = new SISSettings( sisBoard );
 
+    sisSettings->writeSetting( "Input TAP Delay", 1, 10 );
     sisSettings->readRegisters( );
     sisSettings->saveRegisters( "prova.json" );
 
