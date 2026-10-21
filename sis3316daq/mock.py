@@ -1,5 +1,5 @@
 """
-A simulated SIS3316 for running without hardware (WebDAQ's TEST_FLAG mode).
+A simulated SIS3316 for running without hardware (for example WebDAQ's TEST_FLAG mode).
 
 It implements the part of the Sis3316 interface that the DAQ uses and produces
 records in the real memory format, so decoding, spectra and file writing run

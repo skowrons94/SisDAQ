@@ -1,8 +1,8 @@
 """
 Settings model of one SIS3316 and its defaults.
 
-The JSON stored in ``conf/SIS3316_<id>.json`` (and edited by the WebDAQ settings
-page) has three parts::
+A settings dict (stored as JSON by an application, e.g. WebDAQ's
+``conf/SIS3316_<id>.json``) has three parts::
 
     {
       "board":            {...},   # board/group-wide acquisition settings

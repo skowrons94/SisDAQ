@@ -5,9 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sis3316daq"
 version = "1.0.0"
-description = "Struck SIS3316 digitizer DAQ over Ethernet/UDP (acquisition, raw file writing, online decode, statistics)"
+description = "Struck SIS3316 digitizer DAQ over Ethernet/UDP (acquisition, HDF5 run files, online spectra, statistics)"
+readme = "README.md"
+license = {text = "MIT"}
 requires-python = ">=3.8"
 dependencies = ["numpy"]
+
+[project.optional-dependencies]
+files = ["h5py"]   # HDF5 run files
+
+[project.urls]
+Repository = "https://github.com/skowrons94/SisDAQ"
 
 [tool.setuptools]
 packages = ["sis3316daq"]
