@@ -377,12 +377,15 @@ class DAQ:
         s = b.pending_settings
         b.pending_settings = None
         old_bins = b.spectra.shape[1]
+        old_dividers = [channel_settings(b.settings, ch)["histogram_divider"] for ch in range(R.N_CHANNELS)]
         b.dev.disarm()
         b.dev.configure(s)
         b.settings = s
         b.last_stat = None
         b.dev.arm(bank2=b.dev.bank2_armed)
-        if int(s["board"]["spectrum_bins"]) != old_bins:
+        # A new divider is a new energy scale: one spectrum must not mix two.
+        new_dividers = [channel_settings(s, ch)["histogram_divider"] for ch in range(R.N_CHANNELS)]
+        if int(s["board"]["spectrum_bins"]) != old_bins or new_dividers != old_dividers:
             b.reset_spectra()
 
     def update_settings(self, idx: int, settings: Dict[str, Any]) -> Dict[str, Any]:
