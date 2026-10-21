@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sis3316daq"
-version = "1.0.0"
+version = "1.1.0"
 description = "Struck SIS3316 digitizer DAQ over Ethernet/UDP (acquisition, HDF5 run files, online spectra, statistics)"
 readme = "README.md"
 license = {text = "MIT"}

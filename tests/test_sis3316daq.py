@@ -161,6 +161,40 @@ class MockDaqTests(unittest.TestCase):
             finally:
                 d.stop()
 
+    def test_hits_for_coincidences(self):
+        """take_hits() hands out every hit once, time-ordered per channel, in
+        caendaq's record layout; off until enabled; intervals fill alongside."""
+        from sis3316daq.daq import HIT_DTYPE, INTERVAL_BINS
+        s = default_settings()
+        s["board"]["readout_interval_ms"] = 50
+        s["channels"]["0"] = {"enabled": True}
+        s["channels"]["5"] = {"enabled": True}
+        d = DAQ(write=False)
+        d.add_board("SIS3316", 2, "mock", s, mock=True)
+        d.start()
+        try:
+            time.sleep(0.3)
+            self.assertEqual(d.take_hits(0).size, 0)          # not enabled yet
+            d.enable_hits(0)
+            time.sleep(0.6)
+            first = d.take_hits(0)
+            time.sleep(0.3)
+            second = d.take_hits(0)
+        finally:
+            d.stop()
+        self.assertEqual(first.dtype, HIT_DTYPE)
+        self.assertEqual(HIT_DTYPE.itemsize, 16)
+        self.assertGreater(first.size, 0)
+        self.assertEqual(set(np.unique(first["channel"])), {0, 5})
+        both = np.concatenate((first, second))
+        for ch in (0, 5):
+            t = both["time_ps"][both["channel"] == ch]
+            self.assertTrue(np.all(np.diff(t) > 0), "hits repeated or out of order")
+        self.assertEqual(d.hits_dropped(0), 0)
+        iv = d.interval(0, 0)
+        self.assertEqual(iv.size, INTERVAL_BINS)
+        self.assertGreater(int(iv.sum()), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

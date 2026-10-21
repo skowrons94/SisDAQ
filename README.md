@@ -43,8 +43,15 @@ daq.energy(0, 14)              # online energy spectrum (numpy array)
 daq.waveform(0, 14, "pileup")  # latest trace of a pile-up event ('any', 'good', 'pileup')
 daq.onboard_histogram(0, 14)   # the board's own 64K-bin energy histogram
 daq.statistic_counters(0)      # (16, 6) trigger statistics since the run start
+daq.interval(0, 14)            # time between consecutive hits, log bins from 1 ns
 daq.stop()
 ```
+
+For online coincidences, `daq.enable_hits(0)` keeps a 16-byte record per hit
+(`HIT_DTYPE`: `time_ps`, `energy` = spectrum bin, `channel`, `flags` bit 0 =
+pile-up) and `daq.take_hits(0)` returns them since the previous call, the same
+layout as CaenDAQ's, so one coincidence builder serves both. Off by default,
+bounded at about a million hits between two takes.
 
 `Sis3316` (`board.py`) is the low-level driver, for scripts that drive the board
 directly: `open()`, `initialize(settings)`, `arm()` / `swap()`, `read_bank()`,

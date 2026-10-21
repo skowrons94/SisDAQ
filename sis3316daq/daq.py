@@ -39,6 +39,18 @@ logger = logging.getLogger(__name__)
 _FAILED_AFTER = 5            # consecutive failed cycles before a board counts as failed
 _RETRY_INTERVAL_S = 2.0      # re-initialisation attempts of a failed board
 
+# Hits for an online coincidence builder: the same 16-byte records as
+# caendaq.HIT_DTYPE, so one builder serves both. energy is the spectrum bin
+# (energy_max / histogram_divider), flags bit0 = pile-up.
+HIT_DTYPE = np.dtype([("time_ps", "<i8"), ("energy", "<u2"), ("channel", "u1"),
+                      ("flags", "u1"), ("reserved", "<u4")])
+HIT_CAPACITY = 1 << 20       # hits held between two take_hits(), ~16 MB
+
+# Time between consecutive hits of a channel, as caendaq.interval(): log bins
+# from 1 ns to 10 s, INTERVAL_BINS_PER_DECADE per decade.
+INTERVAL_BINS_PER_DECADE = 100
+INTERVAL_BINS = 10 * INTERVAL_BINS_PER_DECADE
+
 
 class _Board:
     def __init__(self, name: str, board_id: int, host: str, settings: Dict[str, Any],
@@ -71,6 +83,10 @@ class _Board:
         self.failed = False
         self.consecutive_errors = 0
         self.last_error = ""
+        self.hits_enabled = False
+        self.hits: List[np.ndarray] = []
+        self.hits_held = 0
+        self.hits_dropped = 0
 
     def reset_spectra(self) -> None:
         bins = int(self.settings["board"]["spectrum_bins"])
@@ -81,6 +97,8 @@ class _Board:
         self.waveforms_good: List[Optional[np.ndarray]] = [None] * R.N_CHANNELS
         self.waveforms_pileup: List[Optional[np.ndarray]] = [None] * R.N_CHANNELS
         self.maws: List[Optional[np.ndarray]] = [None] * R.N_CHANNELS
+        self.intervals = np.zeros((R.N_CHANNELS, INTERVAL_BINS), np.uint32)
+        self.last_time = np.full(R.N_CHANNELS, -1, np.int64)    # samples
 
     def enabled_channels(self) -> List[int]:
         return [ch for ch in range(R.N_CHANNELS)
@@ -309,10 +327,48 @@ class DAQ:
                     b.waveforms_good[ch] = waves[clean[-1]].copy()
             if maws is not None:
                 b.maws[ch] = maws[-1].copy()
+            self._fill_intervals(b, ch, fields["timestamp"])
+            if b.hits_enabled:
+                # As in the spectrum: a negative energy is no energy.
+                good = e >= 0
+                self._keep_hits(b, ch, {k: v[good] for k, v in fields.items()},
+                                np.clip(e[good] // div, 0, 0xFFFF))
             if self.writer is not None:
                 self.writer.append(b.board_id, ch, fields, waves, maws)
         if self.writer is not None:
             self.writer.flush()
+
+    @staticmethod
+    def _fill_intervals(b: _Board, ch: int, ts: np.ndarray) -> None:
+        t = np.concatenate(([b.last_time[ch]], ts.astype(np.int64))) if b.last_time[ch] >= 0 \
+            else ts.astype(np.int64)
+        dt = np.diff(t)
+        dt = dt[dt > 0] * (1000.0 / b.dev.sample_clock_mhz)          # ns
+        if dt.size:
+            bins = np.clip(np.floor(np.log10(dt) * INTERVAL_BINS_PER_DECADE), 0,
+                           INTERVAL_BINS - 1).astype(np.int64)
+            b.intervals[ch] += np.bincount(bins, minlength=INTERVAL_BINS).astype(np.uint32)
+        if ts.size:
+            b.last_time[ch] = max(int(b.last_time[ch]), int(ts.max()))
+
+    @staticmethod
+    def _keep_hits(b: _Board, ch: int, fields: Dict[str, np.ndarray], energy: np.ndarray) -> None:
+        n = fields["timestamp"].size
+        room = max(0, HIT_CAPACITY - b.hits_held)
+        if n > room:
+            b.hits_dropped += n - room
+            n = room
+        if n == 0:
+            return
+        h = np.zeros(n, HIT_DTYPE)
+        ps_per_sample = 1e6 / b.dev.sample_clock_mhz
+        h["time_ps"] = np.round(fields["timestamp"][:n].astype(np.float64) * ps_per_sample).astype(np.int64)
+        h["energy"] = energy[:n]
+        h["channel"] = ch
+        h["flags"] = fields["pileup"][:n].astype(np.uint8)
+        with b.lock:
+            b.hits.append(h)
+            b.hits_held += n
 
     def _apply_pending(self, b: _Board) -> None:
         """Reconfigure between two banks (lock held). Re-arming restarts the
@@ -447,6 +503,32 @@ class DAQ:
         w = {"good": b.waveforms_good, "pileup": b.waveforms_pileup,
              "saturated": [None] * R.N_CHANNELS}.get(kind, b.waveforms)[ch]
         return np.zeros(0, np.uint16) if w is None else w.copy()
+
+    def interval(self, idx: int, ch: int) -> np.ndarray:
+        """Time between consecutive hits: INTERVAL_BINS log bins from 1 ns."""
+        return self.boards[idx].intervals[ch].copy()
+
+    # ── hits for online coincidences ───────────────────────────────────────
+    def enable_hits(self, idx: int, on: bool = True) -> None:
+        """Start (or stop) keeping this board's hits for take_hits(); at most
+        HIT_CAPACITY are held between takes, beyond that they are dropped and
+        counted."""
+        b = self.boards[idx]
+        with b.lock:
+            b.hits_enabled = bool(on)
+            if not on:
+                b.hits, b.hits_held = [], 0
+
+    def take_hits(self, idx: int) -> np.ndarray:
+        """Every hit since the last call (HIT_DTYPE), in readout order:
+        time-ordered per channel, not across channels."""
+        b = self.boards[idx]
+        with b.lock:
+            hits, b.hits, b.hits_held = b.hits, [], 0
+        return np.concatenate(hits) if hits else np.zeros(0, HIT_DTYPE)
+
+    def hits_dropped(self, idx: int) -> int:
+        return int(self.boards[idx].hits_dropped)
 
     def maw(self, idx: int, ch: int) -> np.ndarray:
         m = self.boards[idx].maws[ch]
