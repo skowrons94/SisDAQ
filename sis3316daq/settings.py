@@ -16,6 +16,7 @@ trigger peaking time, since the trapezoid sums P samples).
 """
 
 import copy
+import math
 from typing import Any, Dict
 
 # sample clock MHz -> (Si570 HS_DIV, N1, IOB delay for ADC firmware rev >= 4,
@@ -89,6 +90,14 @@ CHANNEL_DEFAULTS: Dict[str, Any] = {
     "histogram_divider": 200,
     "histogram_offset": 0,
     "histogram_pileup": False,
+    # Counter input: the channel receives logic pulses (a current integrator,
+    # a clock) and its internal trigger count x counter_scale is reported as a
+    # quantity in counter_unit, under counter_name (see scalers.py). Its
+    # events are still recorded like any other channel's.
+    "counter_input": False,
+    "counter_name": "",
+    "counter_scale": 1.0,
+    "counter_unit": "",
 }
 
 N_CHANNELS = 16
@@ -175,6 +184,20 @@ def validate(settings: Dict[str, Any]) -> Dict[str, Any]:
             blk["histogram_divider"] = max(1, min(4095, int(blk["histogram_divider"])))
         if "trigger_threshold" in blk:
             blk["trigger_threshold"] = max(0, min(0x7FFFFFF, int(blk["trigger_threshold"])))
+        if "counter_input" in blk:
+            blk["counter_input"] = bool(blk["counter_input"])
+        if "counter_name" in blk:
+            blk["counter_name"] = str(blk["counter_name"] or "").strip()[:40]
+        if "counter_unit" in blk:
+            blk["counter_unit"] = str(blk["counter_unit"] or "").strip()[:16]
+        if "counter_scale" in blk:
+            try:
+                scale = float(blk["counter_scale"])
+            except (TypeError, ValueError):
+                raise ValueError("counter scale must be a number")
+            if not math.isfinite(scale) or scale == 0:
+                raise ValueError("counter scale must be a non-zero finite number")
+            blk["counter_scale"] = scale
         if "trigger_pulse_length" in blk:
             blk["trigger_pulse_length"] = _even(blk["trigger_pulse_length"], 2, 254)
     for key in list(s["channels"]):

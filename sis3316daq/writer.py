@@ -15,6 +15,15 @@ Layout of ``run_<N>_<cycle:04d>.h5``::
     /board_<id>/maw        (n_events, maw_length) i4, row-aligned with events
                            (only when the MAW test buffer is recorded)
 
+At the stop every file of the run gets the run's scaler totals on its board
+groups (the same in each file: they describe the whole run, not the file):
+
+    /board_<id>/           attrs: statistic_names, statistic_totals (16, 6) i8,
+                                  dead_fraction, live_fraction (16,) f8, NaN
+                                  for a channel off or without triggers,
+                                  counted_s, run_summary (JSON, as in
+                                  sis3316_summary.json)
+
 Rows are appended per bank readout, channel by channel, so they are not
 globally time-ordered: sort by timestamp for coincidences. Every append is
 followed by a flush, so a crash loses at most the bank being written.
@@ -64,6 +73,7 @@ class Hdf5RunWriter:
         self.bytes_written = 0
         self._boards: Dict[int, Dict[str, Any]] = {}
         self._file = None
+        self.paths = []                       # every file of the run, in order
         self._lock = threading.Lock()
         os.makedirs(out_dir, exist_ok=True)
 
@@ -79,6 +89,7 @@ class Hdf5RunWriter:
 
     def _open(self) -> None:
         self.path = self._path()
+        self.paths.append(self.path)
         f = h5py.File(self.path, "w", libver="latest")
         f.attrs["run"] = self.run
         f.attrs["cycle"] = self.cycle
@@ -130,6 +141,32 @@ class Hdf5RunWriter:
                 self._file.flush()
                 self._file.close()
                 self._file = None
+
+    def add_run_summary(self, board_id: int, summary: Dict[str, Any]) -> None:
+        """Store a board's run totals (scalers.board_summary) in every file of
+        the run; called after close()."""
+        names = ["internal", "hit", "deadtime", "pileup", "veto", "high_energy"]
+        totals = np.zeros((16, 6), np.int64)
+        dead = np.full(16, np.nan)
+        live = np.full(16, np.nan)
+        for c in summary["channels"]:
+            ch = c["channel"]
+            totals[ch] = [c[n] for n in names]
+            if c["dead_fraction"] is not None:
+                dead[ch] = c["dead_fraction"]
+                live[ch] = c["live_fraction"]
+        with self._lock:
+            for path in self.paths:
+                with h5py.File(path, "a") as f:
+                    g = f.get(f"board_{board_id}")
+                    if g is None:
+                        continue
+                    g.attrs["statistic_names"] = names
+                    g.attrs["statistic_totals"] = totals
+                    g.attrs["dead_fraction"] = dead
+                    g.attrs["live_fraction"] = live
+                    g.attrs["counted_s"] = float(summary["counted_s"])
+                    g.attrs["run_summary"] = json.dumps(summary)
 
     # ── data ───────────────────────────────────────────────────────────────
     def append(self, board_id: int, channel: int, fields: Dict[str, np.ndarray],

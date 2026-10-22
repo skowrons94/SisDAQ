@@ -14,6 +14,15 @@ them to Graphite with the same metric names caendaq uses:
     <prefix>.bo_<board id>.writeRate
     <prefix>.bo_<board id>.ch_<ch>.{totalRate,pileRate,lostRate,satuRate}
 
+and, SIS3316 only, triggerRate and deadFraction per channel, the board's
+temperature and every counter input under its name:
+
+    <prefix>.bo_<board id>.temperature
+    <prefix>.bo_<board id>.counter.<name>.{counts,total,rate}
+
+A saved run also gets sis3316_scalers.csv and sis3316_summary.json (live time,
+hit-counter check; see scalers.py).
+
 A board that stops answering is marked failed (board_failures counts the
 episodes) and the reader keeps trying to re-initialise it.
 """
@@ -27,6 +36,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from . import registers as R
+from . import scalers as S
 from .board import ACQ_ADDRESS_THRESHOLD, Sis3316
 from .events import decode_bank
 from .mock import MockSis3316
@@ -68,9 +78,20 @@ class _Board:
         self.reset_spectra()
         self.events = np.zeros(R.N_CHANNELS, np.int64)       # cumulative per channel
         self.pileups = np.zeros(R.N_CHANNELS, np.int64)
-        self.deadtime = np.zeros(R.N_CHANNELS, np.int64)
-        self.triggers = np.zeros(R.N_CHANNELS, np.int64)     # internal triggers (board counter)
+        # The six statistic counters summed over the banks whose counts are
+        # known (a bank right after the start, a recovery or a settings change
+        # has no previous latch to subtract). Replaced, not updated in place,
+        # so the stats thread always sees one consistent bank boundary.
+        self.stat_totals = np.zeros((R.N_CHANNELS, 6), np.int64)
+        # Events of those same banks, for the check against the hit counter.
+        self.events_counted = np.zeros(R.N_CHANNELS, np.int64)
+        self.counted_s = 0.0          # time the counted banks span
+        self.uncounted_banks = 0
         self.last_stat = None
+        self.last_stat_t = 0.0
+        self.temperature: Optional[float] = None
+        self.temp_range: List[float] = []
+        self.temp_due = 0.0
         # Statistic counters at the run start: V3316-2004 does not clear them
         # with the Timestamp-Clear, so counts are reported relative to this.
         self.stat_baseline = None
@@ -124,6 +145,9 @@ class DAQ:
         self._rates: List[Dict[str, Any]] = []
         self._rates_lock = threading.Lock()
         self._last_bytes_written = 0
+        self._t_start = 0.0
+        self._scaler_csv: Optional[S.ScalerCsv] = None
+        self.run_summary: Optional[Dict[str, Any]] = None
 
     # ── setup ──────────────────────────────────────────────────────────────
     def add_board(self, name: str, board_id: int, host: str, settings: Dict[str, Any],
@@ -158,6 +182,14 @@ class DAQ:
                     b.board_id, b.name, b.info, b.settings, b.dev.sample_clock_mhz,
                     b.settings["board"]["raw_samples"],
                     b.settings["board"]["maw_test_buffer_length"])
+        self._t_start = time.monotonic()
+        self.run_summary = None
+        self._scaler_csv = None
+        if self.write:
+            try:
+                self._scaler_csv = S.ScalerCsv(self.out_dir)
+            except OSError as e:
+                logger.error(f"SIS3316: cannot write {S.CSV_NAME} in {self.out_dir}: {e}")
         self._running.set()
         for b in self.boards:
             b.thread = threading.Thread(target=self._reader, args=(b,), daemon=True,
@@ -178,8 +210,12 @@ class DAQ:
             b.reset_spectra()
             b.events[:] = 0
             b.pileups[:] = 0
-            b.deadtime[:] = 0
-            b.triggers[:] = 0
+            b.stat_totals = np.zeros((R.N_CHANNELS, 6), np.int64)
+            b.events_counted = np.zeros(R.N_CHANNELS, np.int64)
+            b.counted_s = 0.0
+            b.uncounted_banks = 0
+            b.temp_range = []
+            b.temp_due = 0.0
             b.last_stat = None
             b.dev.clear_timestamp()
             b.stat_baseline = b.dev.statistic_counters()
@@ -200,6 +236,7 @@ class DAQ:
             self._stats_thread = None
         if self.writer is not None:
             self.writer.close()
+        self._finish_scalers()
         return True
 
     def is_running(self) -> bool:
@@ -289,6 +326,19 @@ class DAQ:
                 b.dev.disarm()
             nwords = b.dev.previous_bank_addresses(read_bank2)
             stat = b.dev.statistic_counters()
+            stat_t = time.monotonic()
+            # The temperature register is on the VME FPGA (one plain read):
+            # once per stats interval, with the bank, rather than from another
+            # thread that would wait for this lock.
+            if stat_t >= b.temp_due:
+                b.temp_due = stat_t + self.stats_interval_ms / 1000.0
+                try:
+                    t = float(b.dev.temperature())
+                    b.temperature = t
+                    b.temp_range = [min(b.temp_range[0], t), max(b.temp_range[1], t)] \
+                        if b.temp_range else [t, t]
+                except Sis3316Error:
+                    pass             # a missed reading must not cost the bank
             banks = {}
             for ch in b.enabled_channels():
                 if nwords[ch]:
@@ -297,11 +347,21 @@ class DAQ:
             b.buffers_read += 1
             if b.pending_settings is not None and not final:
                 self._apply_pending(b)
+        # The counters are latched at the swap, so this delta covers exactly
+        # the bank read below. A delta of 2^31 or more in one bank is no count
+        # (it would take ~10 GHz of triggers) but a counter that restarted.
+        counted = False
         if b.last_stat is not None:
             delta = (stat.astype(np.int64) - b.last_stat.astype(np.int64)) % (1 << 32)
-            b.triggers += delta[:, 0]
-            b.deadtime += delta[:, 2]
+            if int(delta.max()) < (1 << 31):
+                counted = True
+                b.stat_totals = b.stat_totals + delta
+                b.counted_s += stat_t - b.last_stat_t
+        if not counted:
+            b.uncounted_banks += 1
         b.last_stat = stat
+        b.last_stat_t = stat_t
+        bank_events = np.zeros(R.N_CHANNELS, np.int64)
         maw_len = b.settings["board"]["maw_test_buffer_length"]
         for ch, words in banks.items():
             fields, waves, maws = decode_bank(words, maw_len)
@@ -310,6 +370,7 @@ class DAQ:
                 continue
             b.events_decoded += n
             b.events[ch] += n
+            bank_events[ch] = n
             b.pileups[ch] += int(fields["pileup"].sum())
             cs = channel_settings(b.settings, ch)
             div = max(1, int(cs["histogram_divider"]))
@@ -335,6 +396,8 @@ class DAQ:
                                 np.clip(e[good] // div, 0, 0xFFFF))
             if self.writer is not None:
                 self.writer.append(b.board_id, ch, fields, waves, maws)
+        if counted:
+            b.events_counted = b.events_counted + bank_events
         if self.writer is not None:
             self.writer.flush()
 
@@ -408,8 +471,7 @@ class DAQ:
 
     # ── statistics ─────────────────────────────────────────────────────────
     def _stats_loop(self) -> None:
-        prev = {b.board_id: (b.events.copy(), b.pileups.copy(), b.deadtime.copy(), b.triggers.copy())
-                for b in self.boards}
+        prev = {b.board_id: (b.events.copy(), b.pileups.copy(), b.stat_totals) for b in self.boards}
         prev_t = time.monotonic()
         while self._running.is_set():
             time.sleep(self.stats_interval_ms / 1000.0)
@@ -420,31 +482,93 @@ class DAQ:
             write_rate = (written - self._last_bytes_written) / dt
             self._last_bytes_written = written
             for b in self.boards:
-                pe, pp, pd, pt = prev[b.board_id]
-                ev, pu, dead, trig = b.events.copy(), b.pileups.copy(), b.deadtime.copy(), b.triggers.copy()
+                pe, pp, pstat = prev[b.board_id]
+                ev, pu, stat = b.events.copy(), b.pileups.copy(), b.stat_totals
+                d = stat - pstat
                 chans = []
                 for ch in range(R.N_CHANNELS):
                     chans.append({
                         "board": b.board_id, "channel": ch,
                         "event_rate": float(ev[ch] - pe[ch]) / dt,
                         "pileup_rate": float(pu[ch] - pp[ch]) / dt,
-                        "lost_rate": float(dead[ch] - pd[ch]) / dt,
+                        "lost_rate": float(d[ch, 2]) / dt,
                         "satu_rate": 0.0,
                         # The board's own count of every internal trigger
                         # (recorded or not); SIS3316 only.
-                        "trigger_rate": float(trig[ch] - pt[ch]) / dt,
+                        "trigger_rate": float(d[ch, 0]) / dt,
+                        # Of this interval's triggers, the share lost to dead
+                        # time (None without triggers); SIS3316 only.
+                        "dead_fraction": S.dead_fraction(d[ch, 0], d[ch, 2]),
                     })
-                prev[b.board_id] = (ev, pu, dead, trig)
+                counters = [dict(c, counts=int(stat[c["channel"], 0]),
+                                 total=float(stat[c["channel"], 0]) * c["scale"],
+                                 rate=float(d[c["channel"], 0]) * c["scale"] / dt)
+                            for c in S.counter_inputs(b.settings, b.enabled_channels())]
+                prev[b.board_id] = (ev, pu, stat)
                 rates.append({
                     "name": b.name, "board_id": b.board_id,
                     "write_rate": write_rate / max(1, len(self.boards)),
                     "board_failures": b.board_failures, "failed": b.failed,
+                    "temperature_c": b.temperature,
+                    "counters": counters,
                     "channels": chans,
                 })
             prev_t = now
             with self._rates_lock:
                 self._rates = rates
+            self._write_scalers()
             self._push_graphite(rates)
+
+    def _write_scalers(self) -> None:
+        if self._scaler_csv is None:
+            return
+        elapsed = time.monotonic() - self._t_start
+        try:
+            for b in self.boards:
+                chans = b.enabled_channels()
+                self._scaler_csv.write(elapsed, b.board_id, chans, b.stat_totals, b.events,
+                                       b.temperature, S.counter_inputs(b.settings, chans))
+        except (OSError, ValueError) as e:
+            logger.error(f"SIS3316: writing {S.CSV_NAME} failed, no more scaler rows this run: {e}")
+            self._scaler_csv.close()
+            self._scaler_csv = None
+
+    def _finish_scalers(self) -> None:
+        """At the stop: a last scaler row with the final bank, the run summary
+        (sis3316_summary.json and the boards' HDF5 attributes) and the check
+        of the hit counters against the events written."""
+        self._write_scalers()
+        if self._scaler_csv is not None:
+            self._scaler_csv.close()
+            self._scaler_csv = None
+        duration = time.monotonic() - self._t_start
+        boards = []
+        for b in self.boards:
+            chans = b.enabled_channels()
+            temp = {"last": b.temperature,
+                    "min": b.temp_range[0] if b.temp_range else None,
+                    "max": b.temp_range[1] if b.temp_range else None}
+            summ = S.board_summary(b.board_id, b.name, chans, b.stat_totals, b.events,
+                                   b.events_counted, b.counted_s, duration, b.uncounted_banks,
+                                   temp, S.counter_inputs(b.settings, chans), b.settings)
+            for m in summ["integrity"]["mismatches"]:
+                logger.warning(f"SIS3316 {b.board_id} ch {m['channel']}: the board counted "
+                               f"{m['hits']} hits but {m['events']} events were read")
+            boards.append(summ)
+        self.run_summary = {"run": self.run, "write": self.write, "boards": boards}
+        if not self.write:
+            return
+        try:
+            S.write_summary(self.out_dir, self.run, self.software, boards)
+        except OSError as e:
+            logger.error(f"SIS3316: cannot write {S.SUMMARY_NAME}: {e}")
+        if self.writer is not None:
+            for summ in boards:
+                try:
+                    self.writer.add_run_summary(summ["board_id"], summ)
+                except Exception as e:
+                    logger.error(f"SIS3316 {summ['board_id']}: run summary not stored "
+                                 f"in the HDF5 files: {e}")
 
     def _push_graphite(self, rates: List[Dict[str, Any]]) -> None:
         host, port, prefix = self.graphite
@@ -455,6 +579,8 @@ class DAQ:
         for b in rates:
             bo = f"{prefix}.bo_{b['board_id']}"
             lines.append(f"{bo}.writeRate {b['write_rate']:.3f} {epoch}")
+            if b.get("temperature_c") is not None:
+                lines.append(f"{bo}.temperature {b['temperature_c']:.2f} {epoch}")
             for c in b["channels"]:
                 base = f"{bo}.ch_{c['channel']}."
                 lines.append(f"{base}totalRate {c['event_rate']:.3f} {epoch}")
@@ -462,6 +588,13 @@ class DAQ:
                 lines.append(f"{base}lostRate {c['lost_rate']:.3f} {epoch}")
                 lines.append(f"{base}satuRate {c['satu_rate']:.3f} {epoch}")
                 lines.append(f"{base}triggerRate {c.get('trigger_rate', 0.0):.3f} {epoch}")
+                if c.get("dead_fraction") is not None:
+                    lines.append(f"{base}deadFraction {c['dead_fraction']:.6f} {epoch}")
+            for c in b.get("counters", []):
+                base = f"{bo}.counter.{c['metric']}."
+                lines.append(f"{base}counts {c['counts']} {epoch}")
+                lines.append(f"{base}total {c['total']:.6g} {epoch}")
+                lines.append(f"{base}rate {c['rate']:.6g} {epoch}")
         try:
             with socket.create_connection((host, port), timeout=0.5) as s:
                 s.sendall(("\n".join(lines) + "\n").encode())
@@ -569,15 +702,56 @@ class DAQ:
             return now
         return (now - b.stat_baseline.astype(np.int64)) % (1 << 32)
 
+    def scalers(self, idx: int) -> Dict[str, Any]:
+        """Run totals of the statistic counters with dead and live fraction,
+        the latest interval's rates, the temperature and the counter inputs:
+        of the running run, or of the last one after the stop. Read from what
+        the readout already collected, so it costs the board nothing."""
+        b = self.boards[idx]
+        running = self._running.is_set()
+        chans = b.enabled_channels()
+        totals, events = b.stat_totals, b.events.copy()
+        with self._rates_lock:
+            latest = next((r for r in self._rates if r["board_id"] == b.board_id), None)
+        rows = []
+        for ch in range(R.N_CHANNELS):
+            t = [int(v) for v in totals[ch]]
+            row = dict(zip(S.NAMES, t))
+            row.update({"channel": ch, "enabled": ch in chans, "events": int(events[ch]),
+                        "dead_fraction": S.dead_fraction(t[0], t[2]),
+                        "live_fraction": S.live_fraction(t[0], t[2])})
+            if latest and running:
+                c = latest["channels"][ch]
+                row.update({"trigger_rate": c.get("trigger_rate"), "event_rate": c["event_rate"],
+                            "interval_dead_fraction": c.get("dead_fraction")})
+            rows.append(row)
+        counters = []
+        for c in S.counter_inputs(b.settings, chans):
+            n = int(totals[c["channel"], 0])
+            rate = next((x["rate"] for x in (latest or {}).get("counters", [])
+                         if x["channel"] == c["channel"]), None) if running else None
+            counters.append(dict(c, counts=n, total=n * c["scale"], rate=rate))
+        return {"running": running, "started": self._t_start > 0,
+                "elapsed_s": (time.monotonic() - self._t_start) if running else None,
+                "counted_s": b.counted_s, "uncounted_banks": b.uncounted_banks,
+                "temperature_c": b.temperature, "names": list(S.NAMES),
+                "channels": rows, "counters": counters,
+                "summary": next((x for x in (self.run_summary or {}).get("boards", [])
+                                 if x["board_id"] == b.board_id), None) if not running else None}
+
     def board_info(self, idx: int) -> Dict[str, Any]:
         b = self.boards[idx]
         info = dict(b.info)
-        try:
-            with b.lock:
-                if info:
-                    info["temperature_c"] = b.dev.temperature()
-        except Sis3316Error:
-            pass
+        if self._running.is_set() and b.temperature is not None:
+            # The readout reads it every stats interval: no extra request.
+            info["temperature_c"] = b.temperature
+        else:
+            try:
+                with b.lock:
+                    if info:
+                        info["temperature_c"] = b.dev.temperature()
+            except Sis3316Error:
+                pass
         info.update({"name": b.name, "board_id": b.board_id, "host": b.host,
                      "sample_clock_mhz": b.dev.sample_clock_mhz, "failed": b.failed})
         return info

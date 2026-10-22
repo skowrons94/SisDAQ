@@ -44,8 +44,17 @@ daq.waveform(0, 14, "pileup")  # latest trace of a pile-up event ('any', 'good',
 daq.onboard_histogram(0, 14)   # the board's own 64K-bin energy histogram
 daq.statistic_counters(0)      # (16, 6) trigger statistics since the run start
 daq.interval(0, 14)            # time between consecutive hits, log bins from 1 ns
+daq.scalers(0)                 # run totals, live time per channel, temperature, counter inputs
 daq.stop()
+daq.run_summary                # the run's totals and hit-counter check (also after write=False)
 ```
+
+A written run also gets `sis3316_scalers.csv` (the six statistic counters per
+channel every stats interval, cumulative, with the temperature) and, at the
+stop, `sis3316_summary.json` and the same totals as HDF5 attributes. Live time
+is `1 - deadtime / internal` per channel; a channel with `counter_input` set
+reports its internal trigger count times `counter_scale` in `counter_unit`
+(a current integrator's pulses, say). Details in `sis3316daq/scalers.py`.
 
 For online coincidences, `daq.enable_hits(0)` keeps a 16-byte record per hit
 (`HIT_DTYPE`: `time_ps`, `energy` = spectrum bin, `channel`, `flags` bit 0 =

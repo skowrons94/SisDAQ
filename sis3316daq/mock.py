@@ -4,7 +4,9 @@ A simulated SIS3316 for running without hardware (for example WebDAQ's TEST_FLAG
 It implements the part of the Sis3316 interface that the DAQ uses and produces
 records in the real memory format, so decoding, spectra and file writing run
 the same code paths as with a board. Every enabled channel sees a pulser-like
-signal: a fixed amplitude per channel with a little noise, at ~100 Hz.
+signal: a fixed amplitude per channel with a little noise, at ~100 Hz. About
+1 % more triggers than events arrive while the board is "not ready" and are
+only counted (internal + deadtime counters), so live time is not 100 %.
 """
 
 import time
@@ -30,6 +32,8 @@ class MockSis3316:
         self._hist = np.zeros((R.N_CHANNELS, R.HISTOGRAM_BINS), np.uint32)
         self._stats = np.zeros((R.N_CHANNELS, 6), np.uint64)
         self._rng = np.random.default_rng(1234)
+        self._dead_rng = np.random.default_rng(4321)
+        self.dead_share = 0.01       # mean dead-time triggers per recorded event
         self.link = type("Link", (), {"timeouts": 0, "bytes_read": 0, "packet_id_mode": False,
                                       "is_open": True})()
 
@@ -132,6 +136,8 @@ class MockSis3316:
             if b.get("onboard_histograms", True):
                 idx = np.clip(energies.astype(np.int64) // div, 0, R.HISTOGRAM_BINS - 1)
                 np.add.at(self._hist[ch], idx, 1)
-            self._stats[ch, 0] += n
+            lost = int(self._dead_rng.poisson(self.dead_share * n))
+            self._stats[ch, 0] += n + lost
             self._stats[ch, 1] += n
+            self._stats[ch, 2] += lost
         return out
