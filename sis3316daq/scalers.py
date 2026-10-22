@@ -69,7 +69,7 @@ LIVE_TIME_DEFINITION = (
 # The hit counter and the events written may differ by this much before the
 # run is flagged: none are expected, but a few at most cost nothing to allow.
 INTEGRITY_ABS = 2
-INTEGRITY_REL = 1e-3
+INTEGRITY_REL = 0.0   # every bank is read and counted alike: no loss is normal
 
 _INTERNAL, _HIT, _DEADTIME = 0, 1, 2
 
@@ -89,7 +89,8 @@ def live_fraction(internal: float, deadtime: float) -> Optional[float]:
 def metric_name(name: str, channel: int) -> str:
     """A counter's name as one Graphite path element ("Beam charge" ->
     "Beam_charge"); the channel when nothing usable is left."""
-    m = re.sub(r"[^A-Za-z0-9_-]+", "_", str(name or "")).strip("_")
+    text = str(name or "").replace("µ", "u").replace("μ", "u")
+    m = re.sub(r"[^A-Za-z0-9_-]+", "_", text).strip("_")
     return m or f"ch_{channel}"
 
 
@@ -112,7 +113,7 @@ def check_integrity(hits: int, events: int) -> Optional[Dict[str, Any]]:
     """None when the board's hit count and the events written agree within the
     tolerance, else what differs."""
     diff = int(events) - int(hits)
-    if abs(diff) <= max(INTEGRITY_ABS, INTEGRITY_REL * max(0, int(hits))):
+    if abs(diff) <= INTEGRITY_ABS:
         return None
     return {"hits": int(hits), "events": int(events), "difference": diff,
             "relative": (diff / hits) if hits else None}

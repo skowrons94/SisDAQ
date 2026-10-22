@@ -146,6 +146,7 @@ class DAQ:
         self._rates_lock = threading.Lock()
         self._last_bytes_written = 0
         self._t_start = 0.0
+        self._t_stop = 0.0
         self._scaler_csv: Optional[S.ScalerCsv] = None
         self.run_summary: Optional[Dict[str, Any]] = None
 
@@ -183,6 +184,7 @@ class DAQ:
                     b.settings["board"]["raw_samples"],
                     b.settings["board"]["maw_test_buffer_length"])
         self._t_start = time.monotonic()
+        self._t_stop = 0.0
         self.run_summary = None
         self._scaler_csv = None
         if self.write:
@@ -220,6 +222,14 @@ class DAQ:
             b.dev.clear_timestamp()
             b.stat_baseline = b.dev.statistic_counters()
             b.dev.arm(bank2=False)
+            # One swap straight away: it latches the counters (which a
+            # Timestamp-Clear does not reset on this firmware) as the run's
+            # baseline, so the first real bank is counted too. The bank closed
+            # by it holds the millisecond since the arm, given up for this.
+            first_bank2 = b.dev.swap()
+            b.dev.previous_bank_addresses(first_bank2)
+            b.last_stat = b.dev.statistic_counters()
+            b.last_stat_t = time.monotonic()
             b.failed = False
             b.consecutive_errors = 0
 
@@ -231,6 +241,9 @@ class DAQ:
             if b.thread is not None:
                 b.thread.join(timeout=10)
                 b.thread = None
+        # The run ends when the readers have read their last bank, not when the
+        # stats loop (asleep for up to one interval) notices.
+        self._t_stop = time.monotonic()
         if self._stats_thread is not None:
             self._stats_thread.join(timeout=5)
             self._stats_thread = None
@@ -322,8 +335,12 @@ class DAQ:
     def _cycle(self, b: _Board, final: bool = False) -> None:
         with b.lock:
             read_bank2 = b.dev.swap()
-            if final:
-                b.dev.disarm()
+            # The final bank is read like any other and the board disarmed only
+            # afterwards (Struck's order: swap, wait for the swap, read the
+            # previous bank, disarm). Disarming first left the swap unconfirmed:
+            # the bank addresses timed out at 0 words and the last readout
+            # interval of every run was never written, though its hits were
+            # counted.
             nwords = b.dev.previous_bank_addresses(read_bank2)
             stat = b.dev.statistic_counters()
             stat_t = time.monotonic()
@@ -345,8 +362,12 @@ class DAQ:
                     banks[ch] = b.dev.read_bank(ch, read_bank2, nwords[ch])
                     b.bytes_read += 4 * nwords[ch]
             b.buffers_read += 1
+            if final:
+                b.dev.disarm()
+            settings_applied = False
             if b.pending_settings is not None and not final:
                 self._apply_pending(b)
+                settings_applied = True
         # The counters are latched at the swap, so this delta covers exactly
         # the bank read below. A delta of 2^31 or more in one bank is no count
         # (it would take ~10 GHz of triggers) but a counter that restarted.
@@ -361,6 +382,11 @@ class DAQ:
             b.uncounted_banks += 1
         b.last_stat = stat
         b.last_stat_t = stat_t
+        if settings_applied:
+            # The bank read above is whole and counted; the one now filling
+            # lost the events between the swap and the re-arm, so it is the
+            # one left out of the counts.
+            b.last_stat = None
         bank_events = np.zeros(R.N_CHANNELS, np.int64)
         maw_len = b.settings["board"]["maw_test_buffer_length"]
         for ch, words in banks.items():
@@ -444,7 +470,6 @@ class DAQ:
         b.dev.disarm()
         b.dev.configure(s)
         b.settings = s
-        b.last_stat = None
         b.dev.arm(bank2=b.dev.bank2_armed)
         # A new divider is a new energy scale: one spectrum must not mix two.
         new_dividers = [channel_settings(s, ch)["histogram_divider"] for ch in range(R.N_CHANNELS)]
@@ -516,7 +541,9 @@ class DAQ:
             prev_t = now
             with self._rates_lock:
                 self._rates = rates
-            self._write_scalers()
+            # Once stopping, the final row is the stop's own (_finish_scalers).
+            if self._running.is_set():
+                self._write_scalers()
             self._push_graphite(rates)
 
     def _write_scalers(self) -> None:
@@ -541,7 +568,7 @@ class DAQ:
         if self._scaler_csv is not None:
             self._scaler_csv.close()
             self._scaler_csv = None
-        duration = time.monotonic() - self._t_start
+        duration = (self._t_stop or time.monotonic()) - self._t_start
         boards = []
         for b in self.boards:
             chans = b.enabled_channels()
@@ -593,7 +620,7 @@ class DAQ:
             for c in b.get("counters", []):
                 base = f"{bo}.counter.{c['metric']}."
                 lines.append(f"{base}counts {c['counts']} {epoch}")
-                lines.append(f"{base}total {c['total']:.6g} {epoch}")
+                lines.append(f"{base}total {c['total']:.10g} {epoch}")
                 lines.append(f"{base}rate {c['rate']:.6g} {epoch}")
         try:
             with socket.create_connection((host, port), timeout=0.5) as s:

@@ -26,6 +26,7 @@ class MockSis3316:
         self.sample_clock_mhz = 250.0
         self.bank2_armed = False
         self._armed = False
+        self._swap_unconfirmed = False
         self._t0 = time.monotonic()
         self._bank_start = time.monotonic()
         self._prev_bank: Dict[int, np.ndarray] = {}
@@ -74,6 +75,11 @@ class MockSis3316:
         self._bank_start = time.monotonic()
 
     def disarm(self) -> None:
+        # Like the board: disarmed before the swap was confirmed (the previous
+        # bank addresses read), the closed bank's addresses never become valid
+        # and reading it yields nothing.
+        if self._swap_unconfirmed:
+            self._prev_bank = {}
         self._armed = False
 
     def acquisition_status(self) -> int:
@@ -83,9 +89,11 @@ class MockSis3316:
         read_bank2 = self.bank2_armed
         self._prev_bank = self._generate(time.monotonic() - self._bank_start)
         self.arm(not self.bank2_armed)
+        self._swap_unconfirmed = True
         return read_bank2
 
     def previous_bank_addresses(self, bank2: bool, timeout_s: float = 0.2) -> List[int]:
+        self._swap_unconfirmed = False
         return [int(self._prev_bank.get(ch, np.zeros(0)).size) for ch in range(R.N_CHANNELS)]
 
     def read_bank(self, channel: int, bank2: bool, nwords: int) -> np.ndarray:

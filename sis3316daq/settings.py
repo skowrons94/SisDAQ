@@ -203,4 +203,16 @@ def validate(settings: Dict[str, Any]) -> Dict[str, Any]:
     for key in list(s["channels"]):
         if not 0 <= int(key) < N_CHANNELS:
             raise ValueError(f"channel {key} out of range 0-15")
+    # Two counters under one Graphite name would add into one series.
+    from .scalers import metric_name
+    seen: Dict[str, int] = {}
+    for ch in range(N_CHANNELS):
+        cs = channel_settings(s, ch)
+        if not cs.get("counter_input"):
+            continue
+        key = metric_name(cs.get("counter_name"), ch).lower()
+        if key in seen:
+            raise ValueError(f"counter inputs on channels {seen[key]} and {ch} have the same "
+                             f"name: give each its own")
+        seen[key] = ch
     return s

@@ -207,8 +207,9 @@ class ScalerMathTests(unittest.TestCase):
     def test_integrity_tolerance(self):
         from sis3316daq import scalers as S
         self.assertIsNone(S.check_integrity(100000, 100000))
-        self.assertIsNone(S.check_integrity(100000, 99950))     # within 0.1 %
         self.assertIsNone(S.check_integrity(10, 8))             # within 2
+        # Every bank is read and counted alike, so a long run gets no slack:
+        self.assertIsNotNone(S.check_integrity(100000, 99950))
         bad = S.check_integrity(100000, 99000)
         self.assertEqual(bad["difference"], -1000)
 
@@ -304,7 +305,10 @@ class ScalerRunTests(unittest.TestCase):
             cin = b["counter_inputs"][0]
             self.assertAlmostEqual(cin["value"], 10 * cin["counts"])
             self.assertGreater(b["counted_s"], 0.5)
-            self.assertGreaterEqual(b["uncounted_banks"], 1)     # the first bank
+            # The start's own swap gives the baseline: every bank is counted,
+            # and events and hits agree to the event.
+            self.assertEqual(b["uncounted_banks"], 0)
+            self.assertEqual(ch2["events_written"], ch2["hit"])
 
             with h5py.File(os.path.join(tmp, "run_7_0000.h5")) as f:
                 g = f["board_1"]
@@ -313,6 +317,22 @@ class ScalerRunTests(unittest.TestCase):
                 self.assertTrue(np.isnan(g.attrs["live_fraction"][0]))
                 self.assertEqual(json.loads(g.attrs["run_summary"])["board_id"], 1)
             self.assertIsNone(S.integrity_note(summ))
+
+    def test_the_last_bank_is_read_at_stop(self):
+        # The board drops the closed bank if it is disarmed before the swap is
+        # confirmed (the mock models this): the stop must read it first.
+        with tempfile.TemporaryDirectory() as tmp:
+            s = default_settings()
+            s["board"]["readout_interval_ms"] = 300
+            s["channels"]["14"] = {"enabled": True}
+            d = DAQ(tmp, run=8, stats_interval_ms=200)
+            d.add_board("SIS3316", 1, "mock", s, mock=True)
+            d.start(); time.sleep(1.0); d.stop()
+            b = d.run_summary["boards"][0]
+            ch = next(c for c in b["channels"] if c["channel"] == 14)
+            self.assertTrue(b["integrity"]["ok"], b["integrity"])
+            self.assertEqual(ch["events_written"], ch["hit"])
+            self.assertGreater(ch["hit"], 0)
 
     def test_hit_counter_mismatch_is_reported(self):
         from sis3316daq import scalers as S
